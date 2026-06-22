@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- SEO tags -->
+  <title>AuraTick | Modern Corporate IT Service Desk Portal</title>
+  <meta name="description" content="AuraTick is a high-fidelity IT ticketing portal supporting active-tracking analytics, SLA workflows, simulated live chat, and instant knowledge solutions.">
+  
+  <!-- Tailwind CSS Play-CDN for flexible utility structures -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <!-- Google Fonts & Custom Style Sheets -->
+  <link rel="stylesheet" href="./css/styles.css">
+</head>
+<body class="bg-slate-950 min-h-screen antialiased select-none selection:bg-indigo-500/30 selection:text-indigo-200">
+
+  <!-- Core App SPA mounting node -->
+  <div id="app">
+    <!-- Initial Loading state screen for pristine UX -->
+    <div class="min-h-screen w-full flex flex-col items-center justify-center bg-slate-950 text-slate-100 font-sans relative overflow-hidden">
+      <!-- Ambient Glow Blobs -->
+      <div class="absolute top-[-10%] left-[-10%] w-[50vw] h-[50vw] rounded-full bg-indigo-900/10 blur-[120px] pointer-events-none"></div>
+      <div class="absolute bottom-[-10%] right-[-10%] w-[50vw] h-[50vw] rounded-full bg-violet-950/15 blur-[120px] pointer-events-none"></div>
+      
+      <div class="z-10 text-center space-y-6 animate-pulse">
+        <div class="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 to-violet-600 flex items-center justify-center font-bold text-white text-3xl shadow-xl shadow-indigo-500/20 mx-auto">A</div>
+        <div class="space-y-1">
+          <h1 class="font-extrabold text-2xl tracking-wider bg-clip-text bg-gradient-to-r from-white to-slate-400">AuraTick</h1>
+          <p class="text-xs font-bold text-indigo-400 tracking-widest uppercase">IT Service desk loading</p>
+        </div>
+        <div class="w-24 h-1 bg-white/5 rounded-full mx-auto overflow-hidden">
+          <div class="h-full bg-indigo-500 rounded-full w-2/3 animate-[loadingBar_1.5s_infinite_ease-in-out]"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    @keyframes loadingBar {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+  </style>
+
+  <!-- Core ESM Bootstrap entry -->
+  <script src="./js/app.js"></script>
+
+</body>
+</html>

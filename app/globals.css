@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+:root {
+  --background: #020617;
+  --foreground: #f1f5f9;
+  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* Glassmorphism custom components */
+.glass-card {
+  background: rgba(15, 23, 42, 0.35) !important;
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.5) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.glass-card:hover {
+  background: rgba(15, 23, 42, 0.45) !important;
+  border-color: rgba(99, 102, 241, 0.25) !important;
+  box-shadow: 0 10px 40px -5px rgba(99, 102, 241, 0.08) !important;
+  transform: translateY(-2px);
+}
+
+/* Scrollbars styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(2, 6, 23, 0.4);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 99px;
+  transition: background 0.3s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.3);
+}
+
+/* Chat container details */
+#chat-messages-container {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+}
+
+/* Dynamic glow effect badges */
+.glow-indigo {
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.3);
+}
+
+.glow-rose {
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.3);
+}
+
+.glow-emerald {
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.3);
+}
+
+/* Animated status pulse indicators */
+@keyframes statusPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.92);
+  }
+}
+
+.pulse-element {
+  animation: statusPulse 2s infinite ease-in-out;
+}
+
+/* Form selection custom hover focus outlines */
+input:focus, select:focus, textarea:focus {
+  outline: none !important;
+  border-color: rgba(99, 102, 241, 0.5) !important;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15) !important;
+}
+
+/* Micro-transitions for lists and clickables */
+.transition-all-300 {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* FAQ accordion specific styling */
+.faq-accordion-header:focus {
+  outline: none;
+}
+
+.accordion-chevron {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.faq-accordion-content {
+  animation: slideDown 0.3s ease-out forwards;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Star selector animations */
+.select-star-btn {
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
+  transition: all 0.2s ease;
+}
+.select-star-btn:hover {
+  transform: scale(1.2);
+  text-shadow: 0 0 15px rgba(245, 158, 11, 0.6);
+}
+
+/* Custom layout animations */
+@keyframes loadingBar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.animate-loadingBar {
+  animation: loadingBar 1.5s infinite ease-in-out;
+}
