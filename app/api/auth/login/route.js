@@ -1,63 +1,80 @@
-import { get } from '@/lib/db.js';
-import { cookies } from 'next/headers';
-import { NextResponse } from 'next/server';
-import bcrypt from 'bcryptjs';
+import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
+import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export async function POST(request) {
   try {
     const { usernameOrEmail, password } = await request.json();
 
-    if (!usernameOrEmail || !password) {
-      return NextResponse.json(
-        { error: 'Username/Email and Password are required' },
-        { status: 400 }
-      );
-    }
-
-    const q = usernameOrEmail.toLowerCase().trim();
-    
-    // Fetch the user including their hashed password
-    const user = await get(
-      `SELECT id, username, password, name, role, email, employee_id AS employeeId, company, department, location, avatar 
-       FROM users 
-       WHERE LOWER(username) = ? OR LOWER(email) = ?`,
-      [q, q]
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     );
 
-    if (!user) {
-      return NextResponse.json(
-        { error: 'Invalid username/email or password.' },
-        { status: 401 }
-      );
-    }
-
-    // Verify hashed password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return NextResponse.json(
-        { error: 'Invalid username/email or password.' },
-        { status: 401 }
-      );
-    }
-
-    // Omit password from session cookie and response
-    const { password: _, ...userSessionProfile } = user;
-
-    // Set HTTP-only session cookie
-    const cookieStore = await cookies();
-    cookieStore.set('auratick_session', JSON.stringify(userSessionProfile), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-      path: '/'
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: usernameOrEmail,
+      password,
     });
 
-    return NextResponse.json({ success: true, user: userSessionProfile });
-  } catch (error) {
-    console.error('Login API error:', error);
+    if (error) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 401 }
+      );
+    }
+
+    // Fetch user profile from users table
+    const { data: profile, error: profileError } =
+      await supabaseAdmin
+        .from("users")
+        .select("*")
+        .eq("id", data.user.id)
+        .single();
+
+    if (profileError) {
+      console.error(profileError);
+
+      return NextResponse.json(
+        { error: "User profile not found" },
+        { status: 500 }
+      );
+    }
+
+    const sessionUser = {
+      id: profile.id,
+      email: profile.email,
+      full_name: profile.full_name,
+      role: profile.role,
+      department_id: profile.department_id,
+      company: profile.company,
+      location: profile.location,
+    };
+
+    const cookieStore = await cookies();
+
+    cookieStore.set(
+      "auratick_session",
+      JSON.stringify(sessionUser),
+      {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        path: "/",
+        maxAge: 60 * 60 * 24 * 7,
+      }
+    );
+
+    return NextResponse.json({
+      success: true,
+      user: sessionUser,
+    });
+
+  } catch (err) {
+    console.error(err);
+
     return NextResponse.json(
-      { error: 'Internal Server Error' },
+      { error: "Internal Server Error" },
       { status: 500 }
     );
   }

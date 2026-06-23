@@ -1,12 +1,13 @@
-import { query, run } from '@/lib/db.js';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 
 async function getSessionUser() {
   const cookieStore = await cookies();
-  const session = cookieStore.get('auratick_session');
-  if (!session) return null;
+
   try {
+    const session = cookieStore.get('auratick_session');
+    if (!session) return null;
     return JSON.parse(session.value);
   } catch {
     return null;
@@ -16,18 +17,23 @@ async function getSessionUser() {
 export async function GET() {
   try {
     const sessionUser = await getSessionUser();
+
     if (!sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const notifications = await query(
-      `SELECT * FROM notifications 
-       WHERE user_id = ? 
-       ORDER BY timestamp DESC`,
-      [sessionUser.id]
-    );
+    const { data, error } = await supabaseAdmin
+      .from('notifications')
+      .select('*')
+      .eq('user_id', sessionUser.id)
+      .order('timestamp', { ascending: false });
 
-    return NextResponse.json(notifications);
+    if (error) {
+      console.error('Notifications GET Supabase Error:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json(data);
   } catch (error) {
     console.error('Notifications GET Error:', error);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
@@ -37,33 +43,35 @@ export async function GET() {
 export async function POST(request) {
   try {
     const sessionUser = await getSessionUser();
+
     if (!sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     let body = {};
+
     try {
       body = await request.json();
     } catch {
-      // Body might be empty
+      body = {};
     }
 
     const { id } = body;
 
+    let updateQuery = supabaseAdmin
+      .from('notifications')
+      .update({ read_status: true })
+      .eq('user_id', sessionUser.id);
+
     if (id) {
-      await run(
-        `UPDATE notifications 
-         SET read_status = 1 
-         WHERE id = ? AND user_id = ?`,
-        [id, sessionUser.id]
-      );
-    } else {
-      await run(
-        `UPDATE notifications 
-         SET read_status = 1 
-         WHERE user_id = ?`,
-        [sessionUser.id]
-      );
+      updateQuery = updateQuery.eq('id', id);
+    }
+
+    const { error } = await updateQuery;
+
+    if (error) {
+      console.error('Notifications POST Supabase Error:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     return NextResponse.json({ success: true });

@@ -1,10 +1,11 @@
-import { get, query, run } from '@/lib/db.js';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import { sendEmail } from '@/lib/mailer.js';
 
 async function getSessionUser() {
   const cookieStore = await cookies();
+
   try {
     const session = cookieStore.get('auratick_session');
     if (!session) return null;
@@ -14,46 +15,79 @@ async function getSessionUser() {
   }
 }
 
+function displayTicketId(ticket) {
+  return ticket.ticket_number || ticket.id;
+}
+
 export async function GET(request, { params }) {
   try {
     const sessionUser = await getSessionUser();
+
     if (!sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { id } = await params;
 
-    // Fetch Ticket details
-    const ticket = await get(
-      `SELECT t.*, 
-              u1.name AS creatorName, u1.avatar AS creatorAvatar, u1.email AS creatorEmail,
-              u2.name AS assigneeName, u2.avatar AS assigneeAvatar
-       FROM tickets t
-       LEFT JOIN users u1 ON t.creator_id = u1.id
-       LEFT JOIN users u2 ON t.assignee_id = u2.id
-       WHERE t.id = ?`,
-      [id]
-    );
+    const { data: ticket, error: ticketError } = await supabaseAdmin
+      .from('tickets')
+      .select(`
+        *,
+        creator:creator_id (
+          id,
+          full_name,
+          email,
+          avatar
+        ),
+        requester:requester_id (
+          id,
+          full_name,
+          email,
+          avatar
+        ),
+        assignee:assignee_id (
+          id,
+          full_name,
+          email,
+          avatar
+        )
+      `)
+      .eq('id', id)
+      .single();
 
-    if (!ticket) {
+    if (ticketError || !ticket) {
       return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
     }
 
-    // Access control
     if (sessionUser.role === 'user' && ticket.creator_id !== sessionUser.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // Fetch Audit Logs
-    const logs = await query(
-      `SELECT timestamp, user_name AS user, action 
-       FROM logs 
-       WHERE ticket_id = ? 
-       ORDER BY timestamp ASC`,
-      [id]
-    );
+    const { data: logs, error: logsError } = await supabaseAdmin
+      .from('logs')
+      .select('timestamp, user_name, action')
+      .eq('ticket_id', id)
+      .order('timestamp', { ascending: true });
 
-    return NextResponse.json({ ...ticket, logs });
+    if (logsError) {
+      console.error('Ticket logs GET Supabase Error:', logsError);
+    }
+
+    const formattedTicket = {
+      ...ticket,
+      creatorName: ticket.creator?.full_name || null,
+      creatorAvatar: ticket.creator?.avatar || null,
+      creatorEmail: ticket.creator?.email || null,
+      assigneeName: ticket.assignee?.full_name || null,
+      assigneeAvatar: ticket.assignee?.avatar || null,
+      logs: (logs || []).map((log) => ({
+        timestamp: log.timestamp,
+        user: log.user_name,
+        action: log.action,
+      })),
+    };
+
+    return NextResponse.json(formattedTicket);
   } catch (error) {
     console.error('Ticket Details GET API Error:', error);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
@@ -63,74 +97,90 @@ export async function GET(request, { params }) {
 export async function PATCH(request, { params }) {
   try {
     const sessionUser = await getSessionUser();
+
     if (!sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { id } = await params;
     const body = await request.json();
+    const now = new Date().toISOString();
 
-    // Fetch ticket first to check permissions and get current values
-    const ticket = await get(`SELECT * FROM tickets WHERE id = ?`, [id]);
-    if (!ticket) {
+    const { data: ticket, error: ticketError } = await supabaseAdmin
+      .from('tickets')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (ticketError || !ticket) {
       return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
     }
 
-    // Access control
     if (sessionUser.role === 'user' && ticket.creator_id !== sessionUser.id) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const updates = [];
-    const dbParams = [];
-    const now = new Date().toISOString();
-    
-    // Change tracking for creator notification
+    const updates = {
+      updated_at: now,
+    };
+
     const changeLog = [];
     let creatorEmail = null;
     let creatorName = null;
 
-    if (ticket.creator_id !== sessionUser.id) {
-      const creator = await get(`SELECT email, name FROM users WHERE id = ?`, [ticket.creator_id]);
+    if (ticket.creator_id && ticket.creator_id !== sessionUser.id) {
+      const { data: creator } = await supabaseAdmin
+        .from('users')
+        .select('email, full_name')
+        .eq('id', ticket.creator_id)
+        .maybeSingle();
+
       if (creator) {
         creatorEmail = creator.email;
-        creatorName = creator.name;
+        creatorName = creator.full_name;
       }
     }
 
-    // 1. Assignee Update (restricted to admin and technicians)
     if ('assigneeId' in body) {
       if (sessionUser.role === 'user') {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
-      
-      const newAssigneeId = body.assigneeId;
-      updates.push('assignee_id = ?');
-      dbParams.push(newAssigneeId);
 
-      let logAction = 'Unassigned ticket';
+      const newAssigneeId = body.assigneeId || null;
+      updates.assignee_id = newAssigneeId;
+
       let assigneeName = 'Unassigned';
+      let logAction = 'Unassigned ticket';
 
       if (newAssigneeId) {
-        const assignee = await get(`SELECT name FROM users WHERE id = ?`, [newAssigneeId]);
+        const { data: assignee } = await supabaseAdmin
+          .from('users')
+          .select('full_name')
+          .eq('id', newAssigneeId)
+          .maybeSingle();
+
         if (assignee) {
-          assigneeName = assignee.name;
+          assigneeName = assignee.full_name;
           logAction = `Assigned ticket to ${assigneeName}`;
         }
       }
 
-      await run(
-        `INSERT INTO logs (ticket_id, user_name, action, timestamp) VALUES (?, ?, ?, ?)`,
-        [id, sessionUser.name, logAction, now]
-      );
+      await supabaseAdmin.from('logs').insert({
+        ticket_id: id,
+        user_name: sessionUser.full_name || sessionUser.email,
+        action: logAction,
+        timestamp: now,
+      });
 
-      // Create Notification for the assignee
       if (newAssigneeId && newAssigneeId !== sessionUser.id) {
-        await run(
-          `INSERT INTO notifications (id, user_id, ticket_id, message, is_urgent, read_status, timestamp)
-           VALUES (?, ?, ?, ?, 0, 0, ?)`,
-          [`notif-${Date.now()}-${Math.floor(Math.random()*100)}`, newAssigneeId, id, `Ticket ${id} has been assigned to you by ${sessionUser.name}`, now]
-        );
+        await supabaseAdmin.from('notifications').insert({
+          user_id: newAssigneeId,
+          ticket_id: id,
+          message: `Ticket ${displayTicketId(ticket)} has been assigned to you by ${sessionUser.full_name || sessionUser.email}`,
+          is_urgent: false,
+          read_status: false,
+          timestamp: now,
+        });
       }
 
       if (creatorEmail) {
@@ -138,28 +188,37 @@ export async function PATCH(request, { params }) {
       }
     }
 
-    // 2. Status Update
     if ('status' in body) {
       const newStatus = body.status;
-      updates.push('status = ?');
-      dbParams.push(newStatus);
+      updates.status = newStatus;
 
-      const isClosedOrResolved = ticket.status === 'Closed' || ticket.status === 'Resolved';
-      const isMovingToActive = newStatus === 'Open' || newStatus === 'In Progress';
-      const logAction = (isClosedOrResolved && isMovingToActive) ? 'Reopened ticket' : `Updated status to ${newStatus}`;
+      const isClosedOrResolved =
+        ticket.status === 'Closed' || ticket.status === 'Resolved';
 
-      await run(
-        `INSERT INTO logs (ticket_id, user_name, action, timestamp) VALUES (?, ?, ?, ?)`,
-        [id, sessionUser.name, logAction, now]
-      );
+      const isMovingToActive =
+        newStatus === 'Open' || newStatus === 'In Progress';
 
-      // Notification to Creator (if updated by someone else)
-      if (ticket.creator_id !== sessionUser.id) {
-        await run(
-          `INSERT INTO notifications (id, user_id, ticket_id, message, is_urgent, read_status, timestamp)
-           VALUES (?, ?, ?, ?, 0, 0, ?)`,
-          [`notif-${Date.now()}-${Math.floor(Math.random()*100)}`, ticket.creator_id, id, `Ticket ${id} status updated to ${newStatus} by ${sessionUser.name}`, now]
-        );
+      const logAction =
+        isClosedOrResolved && isMovingToActive
+          ? 'Reopened ticket'
+          : `Updated status to ${newStatus}`;
+
+      await supabaseAdmin.from('logs').insert({
+        ticket_id: id,
+        user_name: sessionUser.full_name || sessionUser.email,
+        action: logAction,
+        timestamp: now,
+      });
+
+      if (ticket.creator_id && ticket.creator_id !== sessionUser.id) {
+        await supabaseAdmin.from('notifications').insert({
+          user_id: ticket.creator_id,
+          ticket_id: id,
+          message: `Ticket ${displayTicketId(ticket)} status updated to ${newStatus} by ${sessionUser.full_name || sessionUser.email}`,
+          is_urgent: false,
+          read_status: false,
+          timestamp: now,
+        });
       }
 
       if (creatorEmail) {
@@ -167,71 +226,80 @@ export async function PATCH(request, { params }) {
       }
     }
 
-    // 3. Priority Update (restricted to admin and technicians)
     if ('priority' in body) {
       if (sessionUser.role === 'user') {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
-      const newPriority = body.priority;
-      updates.push('priority = ?');
-      dbParams.push(newPriority);
 
-      await run(
-        `INSERT INTO logs (ticket_id, user_name, action, timestamp) VALUES (?, ?, ?, ?)`,
-        [id, sessionUser.name, `Changed priority to ${newPriority}`, now]
-      );
+      const newPriority = body.priority;
+      updates.priority = newPriority;
+
+      await supabaseAdmin.from('logs').insert({
+        ticket_id: id,
+        user_name: sessionUser.full_name || sessionUser.email,
+        action: `Changed priority to ${newPriority}`,
+        timestamp: now,
+      });
 
       if (creatorEmail) {
         changeLog.push(`<strong>Priority:</strong> updated to ${newPriority}`);
       }
     }
 
-    // 4. CSAT Rating and Feedback (normally done by ticket creator)
-    if ('rating' in body || 'feedback' in body) {
-      if ('rating' in body) {
-        updates.push('rating = ?');
-        dbParams.push(body.rating);
-      }
-      if ('feedback' in body) {
-        updates.push('feedback = ?');
-        dbParams.push(body.feedback);
-      }
-
-      await run(
-        `INSERT INTO logs (ticket_id, user_name, action, timestamp) VALUES (?, ?, ?, ?)`,
-        [id, sessionUser.name, `Submitted customer feedback and rating`, now]
-      );
+    if ('rating' in body) {
+      updates.rating = body.rating;
     }
 
-    if (updates.length === 0) {
+    if ('feedback' in body) {
+      updates.feedback = body.feedback;
+    }
+
+    if ('rating' in body || 'feedback' in body) {
+      await supabaseAdmin.from('logs').insert({
+        ticket_id: id,
+        user_name: sessionUser.full_name || sessionUser.email,
+        action: 'Submitted customer feedback and rating',
+        timestamp: now,
+      });
+    }
+
+    const updateKeys = Object.keys(updates).filter((key) => key !== 'updated_at');
+
+    if (updateKeys.length === 0) {
       return NextResponse.json({ error: 'No updates provided' }, { status: 400 });
     }
 
-    // Execute update statement
-    dbParams.push(id);
-    await run(
-      `UPDATE tickets SET ${updates.join(', ')} WHERE id = ?`,
-      dbParams
-    );
+    const { error: updateError } = await supabaseAdmin
+      .from('tickets')
+      .update(updates)
+      .eq('id', id);
 
-    // Send consolidated email alert to the creator (standard user) if the ticket is not already closed
+    if (updateError) {
+      console.error('Ticket update Supabase Error:', updateError);
+      return NextResponse.json({ error: updateError.message }, { status: 500 });
+    }
+
     if (creatorEmail && ticket.status !== 'Closed' && changeLog.length > 0) {
-      await sendEmail({
-        from: 'support@company.com',
-        to: creatorEmail,
-        subject: `Ticket Update Alert: [${id}]`,
-        htmlContent: `
-          <h2>Ticket Update Notification</h2>
-          <p>Dear ${creatorName},</p>
-          <p>Your support ticket <strong>${id}</strong> has been updated by <strong>${sessionUser.name}</strong>.</p>
-          <p>The following changes were made:</p>
-          <ul>
-            ${changeLog.map(change => `<li>${change}</li>`).join('')}
-          </ul>
-          <hr/>
-          <p>Please log in to the portal to view the active details.</p>
-        `
-      });
+      try {
+        await sendEmail({
+          from: 'support@company.com',
+          to: creatorEmail,
+          subject: `Ticket Update Alert: [${displayTicketId(ticket)}]`,
+          htmlContent: `
+            <h2>Ticket Update Notification</h2>
+            <p>Dear ${creatorName || 'User'},</p>
+            <p>Your support ticket <strong>${displayTicketId(ticket)}</strong> has been updated by <strong>${sessionUser.full_name || sessionUser.email}</strong>.</p>
+            <p>The following changes were made:</p>
+            <ul>
+              ${changeLog.map((change) => `<li>${change}</li>`).join('')}
+            </ul>
+            <hr/>
+            <p>Please log in to the portal to view the details.</p>
+          `,
+        });
+      } catch (emailError) {
+        console.error('Ticket update email error:', emailError);
+      }
     }
 
     return NextResponse.json({ success: true });
@@ -244,12 +312,33 @@ export async function PATCH(request, { params }) {
 export async function DELETE(request, { params }) {
   try {
     const sessionUser = await getSessionUser();
+
     if (!sessionUser || sessionUser.role !== 'admin') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     const { id } = await params;
-    await run(`DELETE FROM tickets WHERE id = ?`, [id]);
+
+    await supabaseAdmin
+      .from('notifications')
+      .delete()
+      .eq('ticket_id', id);
+
+    await supabaseAdmin
+      .from('logs')
+      .delete()
+      .eq('ticket_id', id);
+
+    const { error } = await supabaseAdmin
+      .from('tickets')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('Ticket DELETE Supabase Error:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Ticket DELETE API Error:', error);

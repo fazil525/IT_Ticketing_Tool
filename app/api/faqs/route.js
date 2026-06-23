@@ -1,33 +1,36 @@
-import { query } from '@/lib/db.js';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { NextResponse } from 'next/server';
 
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
+
     const category = searchParams.get('category');
     const search = searchParams.get('search');
 
-    let sql = 'SELECT id, category, title, summary, content FROM faqs';
-    const params = [];
-    const conditions = [];
+    let queryBuilder = supabaseAdmin
+      .from('faqs')
+      .select('id, category, title, summary, content')
+      .order('category', { ascending: true });
 
     if (category && category !== 'All') {
-      conditions.push('category = ?');
-      params.push(category);
+      queryBuilder = queryBuilder.eq('category', category);
     }
 
     if (search) {
-      conditions.push('(title LIKE ? OR summary LIKE ? OR content LIKE ?)');
-      const searchWild = `%${search}%`;
-      params.push(searchWild, searchWild, searchWild);
+      queryBuilder = queryBuilder.or(
+        `title.ilike.%${search}%,summary.ilike.%${search}%,content.ilike.%${search}%`
+      );
     }
 
-    if (conditions.length > 0) {
-      sql += ' WHERE ' + conditions.join(' AND ');
+    const { data, error } = await queryBuilder;
+
+    if (error) {
+      console.error('FAQ Supabase Error:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const faqs = await query(sql, params);
-    return NextResponse.json(faqs);
+    return NextResponse.json(data || []);
   } catch (error) {
     console.error('FAQ API Error:', error);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });

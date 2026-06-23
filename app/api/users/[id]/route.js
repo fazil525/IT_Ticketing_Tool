@@ -1,13 +1,13 @@
-import { query, run, get } from '@/lib/db.js';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
-import bcrypt from 'bcryptjs';
 
 async function getSessionUser() {
   const cookieStore = await cookies();
-  const session = cookieStore.get('auratick_session');
-  if (!session) return null;
+
   try {
+    const session = cookieStore.get('auratick_session');
+    if (!session) return null;
     return JSON.parse(session.value);
   } catch {
     return null;
@@ -17,6 +17,7 @@ async function getSessionUser() {
 export async function PATCH(request, { params }) {
   try {
     const sessionUser = await getSessionUser();
+
     if (!sessionUser || sessionUser.role !== 'admin') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -24,96 +25,153 @@ export async function PATCH(request, { params }) {
     const { id } = await params;
     const body = await request.json();
 
-    // Check if target user exists
-    const targetUser = await get('SELECT id FROM users WHERE id = ?', [id]);
-    if (!targetUser) {
+    const { data: targetUser, error: findError } = await supabaseAdmin
+      .from('users')
+      .select('id,email')
+      .eq('id', id)
+      .single();
+
+    if (findError || !targetUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
-    // Admins cannot change their own role to prevent lockout, but can edit other fields
-    const updates = [];
-    const dbParams = [];
+    const updates = {};
 
-    const fields = ['username', 'name', 'role', 'email', 'employeeId', 'company', 'department', 'location', 'avatar'];
-    
-    for (const field of fields) {
-      if (field in body) {
-        let value = body[field];
-        if (field === 'username' || field === 'email') {
-          value = value.toLowerCase().trim();
+    if ('username' in body) updates.username = body.username?.toLowerCase().trim();
+    if ('name' in body) updates.full_name = body.name;
+    if ('email' in body) updates.email = body.email?.toLowerCase().trim();
+    if ('employeeId' in body) updates.employee_id = body.employeeId;
+    if ('company' in body) updates.company = body.company;
+    if ('department' in body) updates.department = body.department;
+    if ('location' in body) updates.location = body.location;
+    if ('avatar' in body) updates.avatar = body.avatar;
+
+    if ('role' in body) {
+      if (id === sessionUser.id && body.role !== sessionUser.role) {
+        return NextResponse.json(
+          { error: 'You cannot change your own admin role' },
+          { status: 400 }
+        );
+      }
+
+      updates.role = body.role;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      const { error: updateProfileError } = await supabaseAdmin
+        .from('users')
+        .update(updates)
+        .eq('id', id);
+
+      if (updateProfileError) {
+        if (updateProfileError.code === '23505') {
+          return NextResponse.json(
+            { error: 'Username or Email already exists' },
+            { status: 400 }
+          );
         }
-        
-        // Database column maps
-        const colMap = {
-          employeeId: 'employee_id'
-        };
-        const colName = colMap[field] || field;
-        
-        updates.push(`${colName} = ?`);
-        dbParams.push(value);
+
+        return NextResponse.json(
+          { error: updateProfileError.message },
+          { status: 500 }
+        );
       }
     }
 
-    // Handle password reset
     if (body.password && body.password.trim() !== '') {
-      const hashedPassword = await bcrypt.hash(body.password, 10);
-      updates.push('password = ?');
-      dbParams.push(hashedPassword);
+      const { error: passwordError } =
+        await supabaseAdmin.auth.admin.updateUserById(id, {
+          password: body.password,
+        });
+
+      if (passwordError) {
+        return NextResponse.json(
+          { error: passwordError.message },
+          { status: 500 }
+        );
+      }
     }
 
-    if (updates.length === 0) {
-      return NextResponse.json({ error: 'No updates provided' }, { status: 400 });
-    }
+    if ('email' in body) {
+      const { error: authEmailError } =
+        await supabaseAdmin.auth.admin.updateUserById(id, {
+          email: body.email?.toLowerCase().trim(),
+          email_confirm: true,
+        });
 
-    dbParams.push(id);
-    await run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, dbParams);
+      if (authEmailError) {
+        return NextResponse.json(
+          { error: authEmailError.message },
+          { status: 500 }
+        );
+      }
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('User PATCH API Error:', error);
-    if (error.message.includes('UNIQUE constraint failed')) {
-      return NextResponse.json({ error: 'Username or Email already exists' }, { status: 400 });
-    }
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json(
+      { error: error.message || 'Internal Server Error' },
+      { status: 500 }
+    );
   }
 }
 
 export async function DELETE(request, { params }) {
   try {
     const sessionUser = await getSessionUser();
+
     if (!sessionUser || sessionUser.role !== 'admin') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     const { id } = await params;
 
-    // Prevent admin from deleting themselves
     if (id === sessionUser.id) {
-      return NextResponse.json({ error: 'You cannot delete your own administrative account' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'You cannot delete your own administrative account' },
+        { status: 400 }
+      );
     }
 
-    // Check if target user exists
-    const targetUser = await get('SELECT id, name FROM users WHERE id = ?', [id]);
-    if (!targetUser) {
+    const { data: targetUser, error: findError } = await supabaseAdmin
+      .from('users')
+      .select('id,full_name,email')
+      .eq('id', id)
+      .single();
+
+    if (findError || !targetUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
-    // Clean up dependencies:
-    // 1. Delete notifications related to this user
-    await run('DELETE FROM notifications WHERE user_id = ?', [id]);
+    await supabaseAdmin
+      .from('notifications')
+      .delete()
+      .eq('user_id', id);
 
-    // 2. Set assignee of tickets assigned to this user to NULL (unassigned)
-    await run('UPDATE tickets SET assignee_id = NULL WHERE assignee_id = ?', [id]);
+    await supabaseAdmin
+      .from('tickets')
+      .update({ assignee_id: null })
+      .eq('assignee_id', id);
 
-    // 3. Delete tickets created by this user
-    await run('DELETE FROM tickets WHERE creator_id = ?', [id]);
+    await supabaseAdmin
+      .from('tickets')
+      .delete()
+      .eq('creator_id', id);
 
-    // 4. Finally delete the user
-    await run('DELETE FROM users WHERE id = ?', [id]);
+    await supabaseAdmin
+      .from('users')
+      .delete()
+      .eq('id', id);
+
+    await supabaseAdmin.auth.admin.deleteUser(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('User DELETE API Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json(
+      { error: error.message || 'Internal Server Error' },
+      { status: 500 }
+    );
   }
 }
